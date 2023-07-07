@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
+import os
 import torch
+import random
+from torch.backends import cudnn
 import torch.nn.functional as F
 from scipy.sparse.csc import csc_matrix
 from scipy.sparse.csr import csr_matrix
@@ -99,7 +102,6 @@ def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_s
     return adata
 
 
-# def clustering(adata, n_clusters=7, method='mclust'):
 def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increment=0.01, ):
     """\
     Spatial clustering based the learned representation.
@@ -196,3 +198,17 @@ def search_res(adata, n_clusters, method='leiden', use_rep='emb', start=0.1, end
     assert label == 1, "Resolution is not found. Please try bigger range or smaller step!."
 
     return res
+
+
+def fix_seed(seed):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    cudnn.deterministic = True
+    cudnn.benchmark = False
+
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'

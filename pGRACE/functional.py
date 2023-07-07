@@ -4,8 +4,8 @@ from torch_geometric.utils import degree, to_undirected
 
 def degree_drop_weights(edge_index):  # 计算边权重
     edge_index_ = to_undirected(edge_index)
-    deg = degree(edge_index_[1])  # (13752,)
-    deg_col = deg[edge_index[1]].to(torch.float32)  # (491722,)
+    deg = degree(edge_index_[1].long())  # (13752,)
+    deg_col = deg[edge_index[1].long()].to(torch.float32)  # (491722,)
     s_col = torch.log(deg_col)
     weights = (s_col.max() - s_col) / (s_col.max() - s_col.mean())
 

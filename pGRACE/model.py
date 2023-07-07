@@ -1,14 +1,14 @@
-from typing import Optional
-
 import torch
 from torch import nn
 import torch.nn.functional as F
+from typing import Optional
 
 from torch_geometric.nn import GCNConv
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, activation='prelu', base_model=GCNConv, k: int = 2, skip=False):
+    def __init__(self, in_channels: int, out_channels: int, activation='prelu', base_model=GCNConv, k: int = 2,
+                 skip=False):
         super(Encoder, self).__init__()
         self.base_model = base_model
 

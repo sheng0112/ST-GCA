@@ -2,22 +2,21 @@ import numpy as np
 from scipy import stats
 from scipy.spatial import distance
 import networkx as nx
-import scanpy as sc
-import torch
 
 
 class graph():
     def __init__(self,
-                 data,
+                 adata,
                  rad_cutoff,
                  k,
                  distType='euclidean', ):
         super(graph, self).__init__()
-        self.data = data
+        self.adata = adata
+        self.data = adata.obsm["spatial"]
         self.distType = distType
         self.k = k
         self.rad_cutoff = rad_cutoff
-        self.num_cell = data.shape[0]
+        self.num_cell = adata.obsm["spatial"].shape[0]
 
     def graph_computing(self):
 
@@ -122,12 +121,8 @@ class graph():
     def main(self):
         adj_mtx = self.graph_computing()  # 找到每个点的最近邻
         graphdict = self.List2Dict(adj_mtx)  # 将其存放在字典中
-        graph = nx.from_dict_of_lists(graphdict)
-        adj = nx.adjacency_matrix(graph)
-        # from_dict_of_lists()从列表字典返回一个图； adjacency_matrix：返回邻接矩阵
+        graph = nx.from_dict_of_lists(graphdict)  # from_dict_of_lists()从列表字典返回一个图
+        adj = nx.adjacency_matrix(graph)  # adjacency_matrix：返回邻接矩阵
         edges = np.array(list(graph.edges()))
 
         return adj, edges
-
-# x = torch.from_numpy(adata.X.todense())
-# edges = torch.from_numpy(np.array(list(edges))).t()
