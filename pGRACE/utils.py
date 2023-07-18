@@ -2,6 +2,9 @@
 import os
 import torch
 import random
+import scipy.sparse as sp
+
+from matplotlib import pyplot as plt
 from torch.backends import cudnn
 import torch.nn.functional as F
 from scipy.sparse.csc import csc_matrix
@@ -12,6 +15,7 @@ from sklearn.decomposition import PCA
 import numpy as np
 import scanpy as sc
 import pandas as pd
+import networkx as nx
 
 
 def preprocess(adata):
@@ -22,7 +26,53 @@ def preprocess(adata):
     return adata
 
 
-def get_feature(adata):
+def adata_preprocess_hvg(adata, n_top_genes):  # 可考虑 no.2
+    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=n_top_genes)
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+
+    return get_feature(adata)
+
+
+def adata_preprocess_pca(i_adata, min_cells=3, pca_n_comps=300):  # 可考虑
+    sc.pp.filter_genes(i_adata, min_cells=min_cells)
+    adata_X = sc.pp.normalize_total(i_adata, target_sum=1, exclude_highly_expressed=True, inplace=False)['X']
+    adata_X = sc.pp.scale(adata_X)
+    adata_X = sc.pp.pca(adata_X, n_comps=pca_n_comps)
+
+    return adata_X
+
+
+def get_edges(graph, nodes = None, flag = 0):
+    if flag == 0:
+        edges = np.array(list(graph.edges()))
+        return torch.from_numpy(edges)
+    else:
+        nodes = nodes.flatten()
+        nodes = torch.unique(nodes)
+        nodes = nodes.tolist()
+        subgraph = graph.subgraph(nodes)
+        edges = np.array(list(subgraph.edges()))
+        return torch.from_numpy(edges)
+
+
+def edge_c(edge_index):
+    edge = edge_index
+    edge_index = edge_index.flatten()
+    edge_index = torch.unique(edge_index)
+    edge_index = edge_index.tolist()
+    dic = {}
+    for i in np.arange(len(edge_index)):
+        x = edge_index[i]
+        dic[x] = i
+    edge = edge.numpy()
+    for i in np.arange(2):
+        for j in np.arange(edge[0].shape[0]):
+            edge[i][j] = dic[edge[i][j]]
+    return torch.from_numpy(edge)
+
+
+def get_feature(adata):  # 未使用
     adata_Vars = adata[:, adata.var['highly_variable']]
 
     if isinstance(adata_Vars.X, csc_matrix) or isinstance(adata_Vars.X, csr_matrix):
@@ -30,8 +80,40 @@ def get_feature(adata):
     else:
         feat = adata_Vars.X[:, ]
 
-    adata.obsm['feat'] = feat
-    return adata
+    return feat
+
+
+def get_adj(x, edges):  # 未使用
+    zip_list = zip(edges[0].numpy(), edges[1].numpy())
+    edges = list(map(lambda item: (item[0], item[1]), zip_list))
+    G = nx.Graph()
+    G.add_edges_from(edges)
+    adj = nx.adjacency_matrix(G).toarray()
+    adj = preprocess_adj(adj)
+    if x.shape[0] == adj.shape[0]:
+        pass
+    else:
+        adj = np.pad(adj, ((0, 1), (0, 1)), mode='constant', constant_values=0.0)
+    return torch.FloatTensor(adj)
+
+
+def normalize_adj(adj):  # 未使用
+    """Symmetrically normalize adjacency matrix."""
+    adj = np.where(adj > 1, 1, adj)
+    adj = sp.coo_matrix(adj)
+    adj = adj + sp.eye(adj.shape[0])
+    rowsum = np.array(adj.sum(1))
+    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
+    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
+    adj = adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt)
+    return adj.toarray()
+
+
+def preprocess_adj(adj):  # 未使用
+    """Preprocessing of adjacency matrix for simple GCN model and conversion to tuple representation."""
+    adj_normalized = normalize_adj(adj)
+    return adj_normalized
 
 
 def get_base_model(name: str):
@@ -58,26 +140,7 @@ def get_activation(name: str):
     return activations[name]
 
 
-def generate_split(num_samples: int, train_ratio: float, val_ratio: float):
-    train_len = int(num_samples * train_ratio)
-    val_len = int(num_samples * val_ratio)
-    test_len = num_samples - train_len - val_len
-
-    train_set, test_set, val_set = random_split(torch.arange(0, num_samples), (train_len, test_len, val_len))
-
-    idx_train, idx_test, idx_val = train_set.indices, test_set.indices, val_set.indices
-    train_mask = torch.zeros((num_samples,)).to(torch.bool)
-    test_mask = torch.zeros((num_samples,)).to(torch.bool)
-    val_mask = torch.zeros((num_samples,)).to(torch.bool)
-
-    train_mask[idx_train] = True  # 将对应的索引位置的值设为True
-    test_mask[idx_test] = True
-    val_mask[idx_val] = True
-
-    return train_mask, test_mask, val_mask
-
-
-def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_seed=2020):
+def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_seed=2020):  # 待使用，看效果
     """\
     Clustering using the mclust algorithm.
     The parameters are the same as those in the R package mclust.
