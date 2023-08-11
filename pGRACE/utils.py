@@ -165,7 +165,7 @@ def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_s
     return adata
 
 
-def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increment=0.01, ):
+def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=3.0, increment=0.01, ):
     """\
     Spatial clustering based the learned representation.
 
@@ -196,9 +196,9 @@ def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increme
 
     """
 
-    pca = PCA(n_components=35, random_state=42)
-    embedding = pca.fit_transform(adata.obsm['emb'].copy())
-    adata.obsm['emb_pca'] = embedding
+    # pca = PCA(n_components=35, random_state=42)
+    # embedding = pca.fit_transform(adata.obsm['emb'].copy())
+    adata.obsm['emb_pca'] = adata.obsm['emb'].copy()
 
     if method == 'mclust':
         adata = mclust_R(adata, used_obsm='emb_pca', num_cluster=n_clusters)
@@ -262,6 +262,30 @@ def search_res(adata, n_clusters, method='leiden', use_rep='emb', start=0.1, end
 
     return res
 
+
+"""
+def get_predicted_results(name, path, z):
+    adata = load_ST_file(os.path.join(path, name))
+    df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
+    label = pd.Categorical(df_meta['layer_guess']).codes
+    n_clusters = label.max() + 1
+    adata = adata[label != -1]
+
+    adj_2d = calculate_adj_matrix(x=adata.obs["array_row"].tolist(), y=adata.obs["array_col"].tolist(),
+                                  histology=False)
+
+    raw_preds = eval_mclust_ari(label[label != -1], z, n_clusters)
+
+    if len(adata.obs) > 1000:
+        num_nbs = 24
+    else:
+        num_nbs = 4
+
+    refined_preds = refine(sample_id=adata.obs.index.tolist(), pred=raw_preds, dis=adj_2d, num_nbs=num_nbs)
+    ari = adjusted_rand_score(label[label != -1], refined_preds)
+
+    return ari, refined_preds
+"""
 
 def fix_seed(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)

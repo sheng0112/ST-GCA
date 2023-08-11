@@ -158,6 +158,12 @@ class train_model:
 
             # features, image_1, image_2, spatial, _ = batch
 
+            features = features.to(self.device)
+            image_1 = image_1.to(self.device)
+            image_2 = image_2.to(self.device)
+            # spatial = spatial.to(self.device)
+            idx = idx.to(self.device)
+
             edges = get_edges(trainloader.dataset.graph, idx, flag=1).t()
 
             # edges = get_edges(trainloader.dataset.graph).t()
@@ -171,8 +177,8 @@ class train_model:
                                               threshold=0.7)
             edge_index_2 = drop_edge_weighted(edges, self.drop_weights, self.args.drop_edge_rate_2,
                                               threshold=0.7)
-            edge_index_1 = edge_c(edge_index_1)
-            edge_index_2 = edge_c(edge_index_2)
+            edge_index_1 = edge_c(edge_index_1).to(self.device)
+            edge_index_2 = edge_c(edge_index_2).to(self.device)
 
             # x_1 = drop_feature_weighted_2(features, self.feature_weights, self.args.drop_feature_rate_1)
             # x_2 = drop_feature_weighted_2(features, self.feature_weights, self.args.drop_feature_rate_2)
@@ -188,11 +194,13 @@ class train_model:
             o1 = self.network.projection(i_1)
             o2 = self.network.projection(i_2)
 
+            batch_size = o1.shape[0]
+
             out = torch.cat([o1, o2], dim=0)
             sim_matrix = torch.exp(torch.mm(out, out.t().contiguous()) / self.args.temperature)
-            mask = (torch.ones_like(sim_matrix) - torch.eye(2 * self.args.batch_size_I,
+            mask = (torch.ones_like(sim_matrix) - torch.eye(2 * batch_size,
                                                             device=sim_matrix.device)).bool()
-            sim_matrix = sim_matrix.masked_select(mask).view(2 * self.args.batch_size_I, -1)
+            sim_matrix = sim_matrix.masked_select(mask).view(2 * batch_size, -1)
 
             pos_sim = torch.exp(torch.sum(o1 * o2, dim=-1) / self.args.temperature)
             pos_sim = torch.cat([pos_sim, pos_sim], dim=0)

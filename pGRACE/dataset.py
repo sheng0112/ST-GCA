@@ -18,14 +18,18 @@ class Dataset(data.Dataset):
 
         adata = sc.read_visium(os.path.join(path, name), count_file='filtered_feature_bc_matrix.h5', load_images=True)
         adata.var_names_make_unique()
+
+        if train == False:
+            self.adata = adata
+
         df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
         self.label = pd.Categorical(df_meta['layer_guess']).codes
         # image
-        full_image = cv2.imread(os.path.join(path, name, f'spatial\\full_image.tif'))
+        full_image = cv2.imread(os.path.join(path, name, f'spatial/full_image.tif'))
         full_image = cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)
         patches = []
         for x, y in adata.obsm['spatial']:
-            patches.append(full_image[y - img_size: y + img_size, x - img_size:x + img_size])  # (224,224,3)
+            patches.append(full_image[y - img_size: y + img_size, x - img_size:x + img_size])  # (32,32,3)
         patches = np.array(patches)
         self.image = patches
 

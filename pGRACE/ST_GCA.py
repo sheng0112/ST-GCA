@@ -41,15 +41,16 @@ class ST_GCA:
         for features, image, spatial, idx in testloader:
             features = features.to(self.device)
             image = image.to(self.device)
-            spatial = spatial.to(self.device)
+            idx = idx.to(self.device)
 
             edges = get_edges(testloader.dataset.graph, idx, flag=1).t()
-            self.drop_weights = degree_drop_weights(edges).to(self.device)
-            edge_index = drop_edge_weighted(edges, self.drop_weights, self.args.drop_edge_rate_1,
+            drop_weights = degree_drop_weights(edges).to(self.device)
+            edge_index = drop_edge_weighted(edges, drop_weights, self.args.drop_edge_rate_1,
                                             threshold=0.7)
             edge_index = edge_c(edge_index)
+            edge_index = edge_index.to(torch.int64).to(self.device)
 
-            xg = self.model.encoder(features, edge_index.to(torch.int64))
+            xg = self.model.encoder(features, edge_index)
             xi = self.model.simCLR(image)
 
             Xg.append(xg.detach().cpu().numpy())
