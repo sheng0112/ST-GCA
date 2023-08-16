@@ -11,7 +11,7 @@ from pGRACE.utils import clustering
 
 import matplotlib as plt
 
-# plt.use('TkAgg')w
+# plt.use('TkAgg')
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,12 +23,14 @@ testset = Dataset(path=args.path, name=args.name, gene_preprocess=args.gene_prep
                   img_size=args.img_size, train=False)
 testloader = DataLoader(testset, batch_size=128, num_workers=1, pin_memory=True)
 
-model = ST_GCA.ST_GCA(args, trainloader, device=device)
+model = ST_GCA.ST_GCA(args, trainset, trainloader, testloader, device=device)
 
-model.train()
+xg, xi = model.train()
 
-xg, xi = model.valid(testloader)
-emb = xg + xi * 0.1
+# xg = model.valid(testset)
+xg = xg.detach().cpu().numpy()
+# xi = xi.detach().cpu().numpy()
+emb = xg + xi
 
 adata = testset.adata
 adata.obsm['emb'] = emb

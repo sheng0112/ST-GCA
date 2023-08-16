@@ -6,17 +6,17 @@ def init_args():
 
     # Experiment Settings
     parser.add_argument('--basePath', type=str, default="D:\PycharmProjects\DeepST-main\data\DLPFC")
-    parser.add_argument('--seed', type=int, default=3)  ###
+    parser.add_argument('--seed', type=int, default=3407)  ###
     parser.add_argument('--learning_rate', type=float, default=0.01)  ###
 
     # Model Design
-    parser.add_argument('--num_hidden', type=int, default=64)  ###
+    parser.add_argument('--num_hidden', type=int, default=128)  ###
     parser.add_argument('--num_proj_hidden', type=int, default=64)  ###
     parser.add_argument('--activation', type=str, default='prelu')  ###
     parser.add_argument('--base_model', type=str, default='GCNConv')  ###
 
     # Training Hyperparameters
-    parser.add_argument('--num_epochs', type=int, default=15)  ###
+    parser.add_argument('--num_epochs', type=int, default=20)  ###
     parser.add_argument('--drop_edge_rate_1', type=float, default=0.2)  ###
     parser.add_argument('--drop_edge_rate_2', type=float, default=0.6)  ###
     parser.add_argument('--drop_feature_rate_1', type=float, default=0.4)
@@ -39,8 +39,9 @@ def init_args():
     parser.add_argument('--lr_I', type=float, default=0.001, help='Learning rate for spot image data')
 
     parser.add_argument('--path', type=str, default="/opt/data/private")  ###
+    # parser.add_argument('--path', type=str, default="D:\PycharmProjects\DeepST-main\data\DLPFC")
     parser.add_argument("--gene_preprocess", choices=("pca", "hvg"), default="hvg")  ###
-    parser.add_argument("--n_gene", choices=(300, 1000), default=300)  ###
+    parser.add_argument("--n_gene", choices=(3000, 1000), default=3000)  ###
     parser.add_argument('--img_size', type=int, default=16)  ###
     parser.add_argument('--name', type=str, default="151673")  ###
     parser.add_argument('--batch_size', type=int, default=128)

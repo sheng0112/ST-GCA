@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -55,7 +56,7 @@ class Encoder(nn.Module):
 
 
 class simCLR_model(Module):
-    def __init__(self, feature_dim=64):
+    def __init__(self, num_proj_hidden, feature_dim=64):
         super(simCLR_model, self).__init__()
 
         self.f = []
@@ -69,7 +70,13 @@ class simCLR_model(Module):
         # encoder
         self.f = nn.Sequential(*self.f)
         self.g = nn.Sequential(nn.Linear(2048, 512, bias=False), nn.BatchNorm1d(512),
-                               nn.ReLU(inplace=True), nn.Linear(512, 64, bias=True))
+                               nn.ReLU(inplace=True), nn.Linear(512, num_proj_hidden, bias=True))
+
+        self.projector = nn.Sequential(
+            nn.Linear(num_proj_hidden, num_proj_hidden),
+            nn.ReLU(),
+            nn.Linear(num_proj_hidden, num_proj_hidden),
+        )
 
     def forward(self, x):
         x = self.f(x)
@@ -83,14 +90,19 @@ class GRACE(torch.nn.Module):
     def __init__(self, encoder: Encoder, simCLR: simCLR_model, num_hidden: int, num_proj_hidden: int, tau: float = 0.5):
         super(GRACE, self).__init__()
         self.encoder: Encoder = encoder
-        self.simCLR: simCLR_model = simCLR
+        # self.simCLR: simCLR_model = simCLR
         self.tau: float = tau  # 0.2
-
+        """
         self.projector = nn.Sequential(
             nn.Linear(num_proj_hidden, num_proj_hidden),
             nn.ReLU(),
             nn.Linear(num_proj_hidden, num_proj_hidden),
         )
+        """
+        self.fc1 = torch.nn.Linear(num_hidden,
+                                   num_proj_hidden)  # Linear(in_features = 128, out_features = 128, bias = True)
+        self.fc2 = torch.nn.Linear(num_proj_hidden,
+                                   num_proj_hidden)  # Linear(in_features = 128, out_features = 128, bias = True)
 
         self.num_hidden = num_hidden  # 128
 
@@ -104,7 +116,9 @@ class GRACE(torch.nn.Module):
         return self.encoder(x, edge_index)
 
     def projection(self, z: torch.Tensor) -> torch.Tensor:
-        return self.projector(z)
+        # return self.projector(z)
+        z = F.elu(self.fc1(z))  # ELU，常用激活函数之一
+        return self.fc2(z)
 
     def sim(self, z1: torch.Tensor, z2: torch.Tensor):
         z1 = F.normalize(z1)
@@ -136,22 +150,42 @@ class GRACE(torch.nn.Module):
 
 
 class train_model:
-    def __init__(self, args, network, optimizer, device):
+    def __init__(self, args, model_g, model_i, optimizer_g, optimizer_i, device):
         self.args = args
-        self.network = network
-        self.optimizer = optimizer
+        self.model_g = model_g
+        self.model_i = model_i
+        self.optimizer_g = optimizer_g
+        self.optimizer_i = optimizer_i
         self.device = device
 
-    def train(self, trainloader, epoch):
+    def train(self, ):
         # with tqdm(total=len(trainloader)) as t:
-        self.network.train()
+        self.model_g.train()
+
         image_loss = 0
         gene_loss = 0
         total_loss = 0
         train_cnt = 0
 
-        # train_bar = tqdm(trainloader)
+        edge_index_1 = drop_edge_weighted(self.edges, self.drop_weights, self.args.drop_edge_rate_1,
+                                          threshold=0.7).to(self.device)
+        edge_index_2 = drop_edge_weighted(self.edges, self.drop_weights, self.args.drop_edge_rate_2,
+                                          threshold=0.7).to(self.device)
 
+        x_1 = drop_feature_weighted_2(self.features, self.feature_weights, self.args.drop_feature_rate_1)  # 上面那个相当于没用
+        x_2 = drop_feature_weighted_2(self.features, self.feature_weights,
+                                      self.args.drop_feature_rate_2)  # (13752,767),上同
+
+        z1 = self.model_g.encoder(x_1, edge_index_1.to(torch.int64))
+        z2 = self.model_g.encoder(x_2, edge_index_2.to(torch.int64))
+
+        loss_g = self.model_g.loss(z1, z2)
+
+        self.optimizer_g.zero_grad()
+        loss_g.backward()
+        self.optimizer_g.step()
+
+        """
         # for i, batch in enumerate(trainloader):
         for features, image_1, image_2, spatial, idx in trainloader:
             # t.set_description(f'Epoch {epoch} train')
@@ -219,13 +253,86 @@ class train_model:
             train_cnt += 1
             #print("=======total_loss========")
             #print(total_loss)
+        """
+        # return total_loss / train_cnt
+        return loss_g
 
-        return total_loss / train_cnt
+    def train_i(self, trainloader):
+        self.model_i.train()
 
-    def fit(self, trainloader):
-        self.network = self.network.to(self.device)
+        image_loss = 0
+        train_cnt = 0
+
+        for features, image_1, image_2, spatial, idx in trainloader:
+            # t.set_description(f'Epoch {epoch} train')
+
+            image_1 = image_1.to(self.device)
+            image_2 = image_2.to(self.device)
+            # spatial = spatial.to(self.device)
+            idx = idx.to(self.device)
+
+            o1 = self.model_i(image_1)
+            o2 = self.model_i(image_2)
+
+            # o1 = self.model_i.projection(i_1)
+            # o2 = self.model_i.projection(i_2)
+
+            batch_size = o1.shape[0]
+
+            out = torch.cat([o1, o2], dim=0)
+            sim_matrix = torch.exp(torch.mm(out, out.t().contiguous()) / self.args.temperature)
+            mask = (torch.ones_like(sim_matrix) - torch.eye(2 * batch_size,
+                                                            device=sim_matrix.device)).bool()
+            sim_matrix = sim_matrix.masked_select(mask).view(2 * batch_size, -1)
+
+            pos_sim = torch.exp(torch.sum(o1 * o2, dim=-1) / self.args.temperature)
+            pos_sim = torch.cat([pos_sim, pos_sim], dim=0)
+
+            loss_i = (- torch.log(pos_sim / sim_matrix.sum(dim=-1))).mean()
+
+            loss = loss_i
+
+            self.optimizer_i.zero_grad()
+            loss.backward()
+            self.optimizer_i.step()
+
+            image_loss += loss_i.item()
+            train_cnt += 1
+
+        return image_loss / train_cnt
+
+    def fit(self, trainset, trainloader, testloader):
+        self.model_g = self.model_g.to(self.device)
+        self.features = torch.from_numpy(trainset.gene).to(self.device)
+        self.edges = get_edges(trainset.graph).t().to(self.device)
+        self.drop_weights = degree_drop_weights(self.edges).to(self.device)
+        edge_index_ = to_undirected(self.edges)
+        node_deg = degree(edge_index_[1])  # 节点的度(13752,)
+        self.feature_weights = feature_drop_weights(self.features, node_c=node_deg).to(self.device)
 
         for epoch in range(self.args.num_epochs):
-            loss = self.train(trainloader, epoch + 1)
-            print("====epoch loss====")
-            print(loss)
+            loss_g = self.train()
+            # print("====epoch loss====")
+            print(loss_g)
+            loss_i = self.train_i(trainloader)
+            print(loss_i)
+
+        with torch.no_grad():
+            self.model_g.eval()
+
+            Xi = []
+
+            emb = self.model_g.encoder(self.features, self.edges.to(torch.int64))
+            emb = self.model_g.projection(emb)
+
+            for features, image, spatial, idx in testloader:
+                image = image.to(self.device)
+                idx = idx.to(self.device)
+
+                xi = self.model_i(image)
+
+                Xi.append(xi.detach().cpu().numpy())
+
+            Xi = np.vstack(Xi)
+
+            return emb, Xi

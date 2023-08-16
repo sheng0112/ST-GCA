@@ -42,7 +42,7 @@ class Dataset(data.Dataset):
             self.gene = adata_preprocess_pca(adata, pca_n_comps=n_genes).astype(np.float32)
         elif gene_preprocess == 'hvg':
             # self.gene = np.array(adata_preprocess_hvg(adata, n_top_genes=n_genes)).astype(np.float32)
-            self.gene = adata_preprocess_hvg(adata, n_top_genes=n_genes)
+            self.gene = adata_preprocess_hvg(adata, n_top_genes=n_genes).todense()
 
         self.graph = graph(self.spatial, distType="KDTree", k=30, rad_cutoff=150).main()
 

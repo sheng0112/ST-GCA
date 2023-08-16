@@ -43,7 +43,7 @@ def adata_preprocess_pca(i_adata, min_cells=3, pca_n_comps=300):  # 可考虑
     return adata_X
 
 
-def get_edges(graph, nodes = None, flag = 0):
+def get_edges(graph, nodes=None, flag=0):
     if flag == 0:
         edges = np.array(list(graph.edges()))
         return torch.from_numpy(edges)
@@ -80,7 +80,7 @@ def get_feature(adata):  # 未使用
     else:
         feat = adata_Vars.X[:, ]
 
-    return feat
+    return csr_matrix(feat)
 
 
 def get_adj(x, edges):  # 未使用
@@ -165,7 +165,7 @@ def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_s
     return adata
 
 
-def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=3.0, increment=0.01, ):
+def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increment=0.01, ):
     """\
     Spatial clustering based the learned representation.
 
@@ -196,9 +196,9 @@ def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=3.0, increme
 
     """
 
-    # pca = PCA(n_components=35, random_state=42)
-    # embedding = pca.fit_transform(adata.obsm['emb'].copy())
-    adata.obsm['emb_pca'] = adata.obsm['emb'].copy()
+    pca = PCA(n_components=35, random_state=42)
+    embedding = pca.fit_transform(adata.obsm['emb'].copy())
+    adata.obsm['emb_pca'] = embedding
 
     if method == 'mclust':
         adata = mclust_R(adata, used_obsm='emb_pca', num_cluster=n_clusters)
@@ -287,6 +287,7 @@ def get_predicted_results(name, path, z):
     return ari, refined_preds
 """
 
+
 def fix_seed(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
     random.seed(seed)
@@ -299,3 +300,12 @@ def fix_seed(seed):
 
     os.environ['PYTHONHASHSEED'] = str(seed)
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)  # 为了禁止hash随机化，使得实验可复现
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True

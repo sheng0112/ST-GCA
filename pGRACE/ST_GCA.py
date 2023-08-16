@@ -9,11 +9,15 @@ from pGRACE.utils import fix_seed, get_activation, get_base_model, get_edges, ed
 class ST_GCA:
     def __init__(self,
                  args,
+                 dataset,
                  data,
+                 test,
                  device=torch.device('cuda'),
                  ):
         self.args = args
+        self.dataset = dataset
         self.data = data
+        self.test = test
         self.device = device
 
         fix_seed(self.args.seed)
@@ -21,23 +25,37 @@ class ST_GCA:
     def train(self):  # args, data:trainset, device
         self.encoder = Encoder(self.args.n_gene, self.args.num_hidden, get_activation(self.args.activation),
                                base_model=get_base_model(self.args.base_model)).to(self.device)
-        self.simCLR = simCLR_model().to(self.device)
-        self.model = GRACE(self.encoder, self.simCLR, self.args.num_hidden, self.args.num_proj_hidden, tau=self.args.tau).to(self.device)
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
+        self.simCLR = simCLR_model(self.args.num_proj_hidden).to(self.device)
+        self.model = GRACE(self.encoder, self.simCLR, self.args.num_hidden, self.args.num_proj_hidden,
+                           tau=self.args.tau).to(self.device)
+        self.optimizer_g = torch.optim.Adam(
+            self.encoder.parameters(),
             lr=self.args.learning_rate,
             weight_decay=self.args.weight_decay
         )
-        trainer = train_model(self.args, self.model, self.optimizer, self.device)
-        trainer.fit(self.data)
+        self.optimizer_i = torch.optim.Adam(
+            self.simCLR.parameters(),
+            lr=self.args.learning_rate,
+            weight_decay=self.args.weight_decay
+        )
+        trainer = train_model(self.args, self.model, self.simCLR, self.optimizer_g, self.optimizer_i, self.device)
+        xg, xi = trainer.fit(self.dataset, self.data, self.test)
+        return xg, xi
 
-    def valid(self, testloader):
+    def valid(self, testset):
         Xg = []
         Xi = []
         self.model.eval()
         valid_loss = 0
         valid_cnt = 0
 
+        features = torch.from_numpy(testset.gene).to(self.device)
+        edges = get_edges(testset.graph).t().to(self.device)
+        self.drop_weights = degree_drop_weights(edges).to(self.device)
+        edge_index = drop_edge_weighted(edges, self.drop_weights, self.args.drop_edge_rate_1,
+                                        threshold=0.7).to(self.device)
+        z = self.model.encoder(features, edge_index.to(torch.int64))
+        """
         for features, image, spatial, idx in testloader:
             features = features.to(self.device)
             image = image.to(self.device)
@@ -55,8 +73,10 @@ class ST_GCA:
 
             Xg.append(xg.detach().cpu().numpy())
             Xi.append(xi.detach().cpu().numpy())
+        """
 
-        Xg = np.vstack(Xg)
-        Xi = np.vstack(Xi)
+        # Xg = np.vstack(Xg)
+        # Xi = np.vstack(Xi)
 
-        return Xg, Xi
+        # return Xg, Xi
+        return z
