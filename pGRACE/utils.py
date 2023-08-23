@@ -1,78 +1,35 @@
 # -*- coding: utf-8 -*-
-import os
+import numpy as np
+import pandas as pd
+import scanpy as sc
 import torch
-import random
-import scipy.sparse as sp
-
-from matplotlib import pyplot as plt
-from torch.backends import cudnn
 import torch.nn.functional as F
 from scipy.sparse.csc import csc_matrix
 from scipy.sparse.csr import csr_matrix
 from torch.utils.data import random_split
 from torch_geometric.nn import GCNConv, SGConv, SAGEConv, GraphConv
-from sklearn.decomposition import PCA
-import numpy as np
-import scanpy as sc
-import pandas as pd
-import networkx as nx
 
 
 def preprocess(adata):
-    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=3000)
+    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=100)
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
     # sc.pp.scale(adata, zero_center=False, max_value=10)
-    return adata
-
-
-def adata_preprocess_hvg(adata, n_top_genes):  # 可考虑 no.2
-    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=n_top_genes)
-    sc.pp.normalize_total(adata, target_sum=1e4)
-    sc.pp.log1p(adata)
-
-    return get_feature(adata)
-
-
-def adata_preprocess_pca(i_adata, min_cells=3, pca_n_comps=300):  # 可考虑
-    sc.pp.filter_genes(i_adata, min_cells=min_cells)
-    adata_X = sc.pp.normalize_total(i_adata, target_sum=1, exclude_highly_expressed=True, inplace=False)['X']
-    adata_X = sc.pp.scale(adata_X)
-    adata_X = sc.pp.pca(adata_X, n_comps=pca_n_comps)
-
-    return adata_X
-
-
-def get_edges(graph, nodes=None, flag=0):
-    if flag == 0:
-        edges = np.array(list(graph.edges()))
-        return torch.from_numpy(edges)
+    feat = get_feature(adata)
+    # pca = PCA(n_components=1000)
+    """
+    if issparse(feat):
+        pca.fit(feat.A)  # fit(X)，表示用数据X来训练PCA模型。  函数返回值：调用fit方法的对象本身。比如pca.fit(X)，表示用X对pca这个对象进行训练。
+        embed = pca.transform(feat.A) #(3639,50)  # 用X来训练PCA模型，同时返回降维后的数据,embed就是降维后的数据。
     else:
-        nodes = nodes.flatten()
-        nodes = torch.unique(nodes)
-        nodes = nodes.tolist()
-        subgraph = graph.subgraph(nodes)
-        edges = np.array(list(subgraph.edges()))
-        return torch.from_numpy(edges)
+        pca.fit(feat)
+        embed = pca.transform(feat)
+    """
+    features = torch.FloatTensor(np.array(feat))
+    return adata, features
 
 
-def edge_c(edge_index):
-    edge = edge_index
-    edge_index = edge_index.flatten()
-    edge_index = torch.unique(edge_index)
-    edge_index = edge_index.tolist()
-    dic = {}
-    for i in np.arange(len(edge_index)):
-        x = edge_index[i]
-        dic[x] = i
-    edge = edge.numpy()
-    for i in np.arange(2):
-        for j in np.arange(edge[0].shape[0]):
-            edge[i][j] = dic[edge[i][j]]
-    return torch.from_numpy(edge)
-
-
-def get_feature(adata):  # 未使用
+def get_feature(adata):
     adata_Vars = adata[:, adata.var['highly_variable']]
 
     if isinstance(adata_Vars.X, csc_matrix) or isinstance(adata_Vars.X, csr_matrix):
@@ -80,40 +37,8 @@ def get_feature(adata):  # 未使用
     else:
         feat = adata_Vars.X[:, ]
 
-    return csr_matrix(feat)
-
-
-def get_adj(x, edges):  # 未使用
-    zip_list = zip(edges[0].numpy(), edges[1].numpy())
-    edges = list(map(lambda item: (item[0], item[1]), zip_list))
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    adj = nx.adjacency_matrix(G).toarray()
-    adj = preprocess_adj(adj)
-    if x.shape[0] == adj.shape[0]:
-        pass
-    else:
-        adj = np.pad(adj, ((0, 1), (0, 1)), mode='constant', constant_values=0.0)
-    return torch.FloatTensor(adj)
-
-
-def normalize_adj(adj):  # 未使用
-    """Symmetrically normalize adjacency matrix."""
-    adj = np.where(adj > 1, 1, adj)
-    adj = sp.coo_matrix(adj)
-    adj = adj + sp.eye(adj.shape[0])
-    rowsum = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    adj = adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt)
-    return adj.toarray()
-
-
-def preprocess_adj(adj):  # 未使用
-    """Preprocessing of adjacency matrix for simple GCN model and conversion to tuple representation."""
-    adj_normalized = normalize_adj(adj)
-    return adj_normalized
+    # adata.obsm['feat'] = feat
+    return feat
 
 
 def get_base_model(name: str):
@@ -140,7 +65,26 @@ def get_activation(name: str):
     return activations[name]
 
 
-def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_seed=2020):  # 待使用，看效果
+def generate_split(num_samples: int, train_ratio: float, val_ratio: float):
+    train_len = int(num_samples * train_ratio)
+    val_len = int(num_samples * val_ratio)
+    test_len = num_samples - train_len - val_len
+
+    train_set, test_set, val_set = random_split(torch.arange(0, num_samples), (train_len, test_len, val_len))
+
+    idx_train, idx_test, idx_val = train_set.indices, test_set.indices, val_set.indices
+    train_mask = torch.zeros((num_samples,)).to(torch.bool)
+    test_mask = torch.zeros((num_samples,)).to(torch.bool)
+    val_mask = torch.zeros((num_samples,)).to(torch.bool)
+
+    train_mask[idx_train] = True  # 将对应的索引位置的值设为True
+    test_mask[idx_test] = True
+    val_mask[idx_val] = True
+
+    return train_mask, test_mask, val_mask
+
+
+def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_seed=2020):
     """\
     Clustering using the mclust algorithm.
     The parameters are the same as those in the R package mclust.
@@ -165,6 +109,7 @@ def mclust_R(adata, num_cluster, modelNames='EEE', used_obsm='emb_pca', random_s
     return adata
 
 
+# def clustering(adata, n_clusters=7, method='mclust'):
 def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increment=0.01, ):
     """\
     Spatial clustering based the learned representation.
@@ -196,9 +141,9 @@ def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increme
 
     """
 
-    pca = PCA(n_components=35, random_state=42)
-    embedding = pca.fit_transform(adata.obsm['emb'].copy())
-    adata.obsm['emb_pca'] = embedding
+    # pca = PCA(n_components=30, random_state=42)
+    # embedding = pca.fit_transform(adata.obsm['emb'].copy())
+    adata.obsm['emb_pca'] = adata.obsm['emb'].copy()
 
     if method == 'mclust':
         adata = mclust_R(adata, used_obsm='emb_pca', num_cluster=n_clusters)
@@ -261,51 +206,3 @@ def search_res(adata, n_clusters, method='leiden', use_rep='emb', start=0.1, end
     assert label == 1, "Resolution is not found. Please try bigger range or smaller step!."
 
     return res
-
-
-"""
-def get_predicted_results(name, path, z):
-    adata = load_ST_file(os.path.join(path, name))
-    df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
-    label = pd.Categorical(df_meta['layer_guess']).codes
-    n_clusters = label.max() + 1
-    adata = adata[label != -1]
-
-    adj_2d = calculate_adj_matrix(x=adata.obs["array_row"].tolist(), y=adata.obs["array_col"].tolist(),
-                                  histology=False)
-
-    raw_preds = eval_mclust_ari(label[label != -1], z, n_clusters)
-
-    if len(adata.obs) > 1000:
-        num_nbs = 24
-    else:
-        num_nbs = 4
-
-    refined_preds = refine(sample_id=adata.obs.index.tolist(), pred=raw_preds, dis=adj_2d, num_nbs=num_nbs)
-    ari = adjusted_rand_score(label[label != -1], refined_preds)
-
-    return ari, refined_preds
-"""
-
-
-def fix_seed(seed):
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    cudnn.deterministic = True
-    cudnn.benchmark = False
-
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)  # 为了禁止hash随机化，使得实验可复现
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True

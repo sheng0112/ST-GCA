@@ -1,18 +1,17 @@
+import networkx as nx
+import numba
 import numpy as np
 from scipy import stats
 from scipy.spatial import distance
-import networkx as nx
 
 
-class graph:
+class graph():
     def __init__(self,
-                 #adata,
                  data,
                  rad_cutoff,
                  k,
                  distType='euclidean', ):
         super(graph, self).__init__()
-        #self.adata = adata
         self.data = data
         self.distType = distType
         self.k = k
@@ -122,7 +121,67 @@ class graph:
     def main(self):
         adj_mtx = self.graph_computing()  # 找到每个点的最近邻
         graphdict = self.List2Dict(adj_mtx)  # 将其存放在字典中
-        graph = nx.from_dict_of_lists(graphdict)  # from_dict_of_lists()从列表字典返回一个图
-        #edges = np.array(list(graph.edges()))
+        graph = nx.from_dict_of_lists(graphdict)
+        edges = np.array(list(graph.edges()))
 
-        return graph
+        return edges
+
+
+@numba.njit("f4(f4[:], f4[:])")
+def euclid_dist(t1, t2):
+    sum = 0
+    for i in range(t1.shape[0]):
+        sum += (t1[i] - t2[i]) ** 2
+    return np.sqrt(sum)
+
+
+@numba.njit("f4[:,:](f4[:,:])", parallel=True, nogil=True)
+def pairwise_distance(X):
+    n = X.shape[0]
+    adj = np.empty((n, n), dtype=np.float32)
+    for i in numba.prange(n):
+        for j in numba.prange(n):
+            adj[i][j] = euclid_dist(X[i], X[j])
+    return adj
+
+
+def calculate_adj_matrix(x, y, x_pixel=None, y_pixel=None, image=None, beta=49, alpha=1, histology=False):
+    # x,y,x_pixel, y_pixel are lists
+    X = np.array([x, y]).T.astype(np.float32)
+    adj = pairwise_distance(X)
+    return adj
+
+
+def load_graph(adata):
+    x_array = adata.obs["array_row"]
+    y_array = adata.obs["array_col"]
+    adj = calculate_adj_matrix(x_array, y_array)
+
+    num_vertices = len(adj)
+    graph = nx.Graph()
+    graph.add_nodes_from(range(num_vertices))
+
+    def euclidean_to_adjacency(euclidean_matrix, n):
+        adjacency_matrix = np.zeros_like(euclidean_matrix)
+
+        # 获取矩阵中距离最小的n个元素的索引
+        indices = np.argsort(euclidean_matrix, axis=1)[:n]
+
+        # 将距离最小的n个元素转换为邻接矩阵中的1
+        row_indices, col_indices = np.unravel_index(indices, euclidean_matrix.shape)
+        adjacency_matrix[row_indices, col_indices] = 1
+
+        np.fill_diagonal(adjacency_matrix, 0)
+        return adjacency_matrix
+
+    n = 30  # 距离最近的前2个元素作为邻居
+    adjacency_matrix = euclidean_to_adjacency(adj, n)
+
+    for i in range(num_vertices):
+        for j in range(i + 1, num_vertices):
+            if adjacency_matrix[i][j] == 1:
+                graph.add_edge(i, j)
+
+    edges = np.array(list(graph.edges()))
+
+    return edges
