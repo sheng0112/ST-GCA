@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import torch
+import scipy.sparse as sp
+from sklearn.decomposition import PCA
 import torch.nn.functional as F
 from scipy.sparse.csc import csc_matrix
 from scipy.sparse.csr import csr_matrix
@@ -11,12 +13,11 @@ from torch_geometric.nn import GCNConv, SGConv, SAGEConv, GraphConv
 
 
 def preprocess(adata):
-    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=100)
+    sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=1000)
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
     # sc.pp.scale(adata, zero_center=False, max_value=10)
-    feat = get_feature(adata)
-    # pca = PCA(n_components=1000)
+    get_feature(adata)
     """
     if issparse(feat):
         pca.fit(feat.A)  # fit(X)，表示用数据X来训练PCA模型。  函数返回值：调用fit方法的对象本身。比如pca.fit(X)，表示用X对pca这个对象进行训练。
@@ -25,8 +26,15 @@ def preprocess(adata):
         pca.fit(feat)
         embed = pca.transform(feat)
     """
-    features = torch.FloatTensor(np.array(feat))
-    return adata, features
+
+
+def permutation(feature):
+    # fix_seed(FLAGS.random_seed)
+    ids = np.arange(feature.shape[0])
+    ids = np.random.permutation(ids)  # 对ids进行随机排列
+    feature_permutated = feature[ids]  # 打乱行
+
+    return feature_permutated
 
 
 def get_feature(adata):
@@ -37,32 +45,33 @@ def get_feature(adata):
     else:
         feat = adata_Vars.X[:, ]
 
-    # adata.obsm['feat'] = feat
-    return feat
+    adata.obsm['feat'] = feat
 
 
-def get_base_model(name: str):
-    base_models = {
-        'GCNConv': GCNConv,
-        'SGConv': SGConv,
-        'SAGEConv': SAGEConv,
-        'GraphConv': GraphConv,
-    }
-
-    return base_models[name]
+def add_contrastive_label(adata):
+    # contrastive label
+    n_spot = adata.n_obs
+    one_matrix = np.ones([n_spot, 1])  # (3639, 1)
+    zero_matrix = np.zeros([n_spot, 1])  # (3639, 1)
+    label_CSL = np.concatenate([one_matrix, zero_matrix], axis=1)  # (3639, 2) [1 0]……
+    adata.obsm['label_CSL'] = label_CSL
 
 
-def get_activation(name: str):
-    activations = {
-        'relu': F.relu,
-        'hardtanh': F.hardtanh,
-        'elu': F.elu,
-        'leakyrelu': F.leaky_relu,
-        'prelu': torch.nn.PReLU(),
-        'rrelu': F.rrelu
-    }
+def normalize_adj(adj):
+    """Symmetrically normalize adjacency matrix."""
+    adj = sp.coo_matrix(adj)
+    rowsum = np.array(adj.sum(1))
+    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
+    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
+    adj = adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt)
+    return adj.toarray()
 
-    return activations[name]
+
+def preprocess_adj(adj):
+    """Preprocessing of adjacency matrix for simple GCN model and conversion to tuple representation."""
+    adj_normalized = normalize_adj(adj) + np.eye(adj.shape[0])
+    return adj_normalized
 
 
 def generate_split(num_samples: int, train_ratio: float, val_ratio: float):
@@ -143,7 +152,7 @@ def clustering(adata, n_clusters=7, method='mclust', start=0.1, end=1.0, increme
 
     # pca = PCA(n_components=30, random_state=42)
     # embedding = pca.fit_transform(adata.obsm['emb'].copy())
-    adata.obsm['emb_pca'] = adata.obsm['emb'].copy()
+    adata.obsm['emb_pca'] = adata.obsm['emb']
 
     if method == 'mclust':
         adata = mclust_R(adata, used_obsm='emb_pca', num_cluster=n_clusters)

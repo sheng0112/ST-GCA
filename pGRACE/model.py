@@ -1,9 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch_geometric.nn import GCNConv
+from torch.nn.parameter import Parameter
 
-from pGRACE.utils import get_activation
+from pGRACE.utils import permutation
 
 
 class Encoder(nn.Module):
@@ -30,13 +30,13 @@ class Encoder(nn.Module):
 
         current_decoder_dim = linear_decoder_hidden[0]
         self.decoder = nn.Sequential()
-        """
+
         for ld in range(1, len(self.linear_decoder_hidden)):
             self.decoder.add_module(f'decoder_L{ld}',
                                     buildNetwork(current_decoder_dim, self.linear_decoder_hidden[ld], self.activate,
                                                  self.p_drop))
             current_decoder_dim = self.linear_decoder_hidden[ld]
-        """
+
         self.decoder.add_module(f'decoder_L{len(self.linear_decoder_hidden)}',
                                 buildNetwork(self.linear_decoder_hidden[-1],
                                              self.input_dim, "sigmoid", self.p_drop))
@@ -50,96 +50,126 @@ class Encoder(nn.Module):
         return feat
 
 
-class GCA(nn.Module):
-    def __init__(self,
-                 in_channels: int,
-                 num_hidden: int,
-                 num_proj_hidden: int,
-                 activation=get_activation('prelu'),
-                 base_model=GCNConv,
-                 k: int = 2,
-                 skip=False):
-        super(GCA, self).__init__()
-        self.base_model = base_model
+class Discriminator(nn.Module):
+    def __init__(self, n_h):
+        super(Discriminator, self).__init__()
+        self.f_k = nn.Bilinear(n_h, n_h, 1)
+        for m in self.modules():
+            self.weights_init(m)
 
-        assert k >= 2
-        self.k = k
-        self.skip = skip
-        if not self.skip:
-            self.conv = [base_model(in_channels, num_hidden).jittable()]  # (767,256) ,jittable()，加速张量计算
-            for _ in range(1, k - 1):
-                self.conv.append(base_model(num_hidden, num_hidden))
-            self.conv.append(base_model(num_hidden, num_proj_hidden))  # (256,128)
-            self.conv = nn.ModuleList(self.conv)
+    def weights_init(self, m):
+        if isinstance(m, nn.Bilinear):
+            torch.nn.init.xavier_uniform_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.fill_(0.0)
 
-            self.activation = activation
-        else:
-            self.fc_skip = nn.Linear(in_channels, num_hidden)
-            self.conv = [base_model(in_channels, num_hidden)]
-            for _ in range(1, k):
-                self.conv.append(base_model(num_hidden, num_proj_hidden))
-            self.conv = nn.ModuleList(self.conv)
+    def forward(self, c, h_pl, h_mi, s_bias1=None, s_bias2=None):
+        c_x = c.expand_as(h_pl)
 
-            self.activation = activation
+        sc_1 = self.f_k(h_pl, c_x)
+        sc_2 = self.f_k(h_mi, c_x)
 
-        self.fc1 = torch.nn.Linear(num_proj_hidden,
-                                   num_proj_hidden)  # Linear(in_features = 128, out_features = 128, bias = True)
-        self.fc2 = torch.nn.Linear(num_proj_hidden,
-                                   num_proj_hidden)  # Linear(in_features = 128, out_features = 128, bias = True)
+        if s_bias1 is not None:
+            sc_1 += s_bias1
+        if s_bias2 is not None:
+            sc_2 += s_bias2
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
-        if not self.skip:
-            for i in range(self.k):
-                x = self.activation(self.conv[i](x, edge_index.to(torch.int64)))
-            return x
-        else:
-            h = self.activation(self.conv[0](x, edge_index))
-            hs = [self.fc_skip(x), h]
-            for i in range(1, self.k):
-                u = sum(hs)
-                hs.append(self.activation(self.conv[i](u, edge_index)))
-            return hs[-1]
+        logits = torch.cat((sc_1, sc_2), 1)
 
-    def projection(self, z: torch.Tensor) -> torch.Tensor:
-        z = F.elu(self.fc1(z))
-        return self.fc2(z)
+        return logits
+
+
+class AvgReadout(nn.Module):
+    def __init__(self):
+        super(AvgReadout, self).__init__()
+
+    def forward(self, emb, mask=None):
+        vsum = torch.mm(mask, emb)
+        row_sum = torch.sum(mask, 1)
+        row_sum = row_sum.expand((vsum.shape[1], row_sum.shape[0])).T
+        global_emb = vsum / row_sum
+
+        return F.normalize(global_emb, p=2, dim=1)
+
+
+class GCL(nn.Module):
+    def __init__(self, in_features, out_features, graph_neigh, dropout=0.0, act=F.relu):
+        super(GCL, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.graph_neigh = graph_neigh
+        self.dropout = dropout
+        self.act = act
+
+        self.weight1 = Parameter(torch.FloatTensor(self.in_features, self.out_features))
+        # self.weight2 = Parameter(torch.FloatTensor(self.out_features, self.in_features))
+        self.reset_parameters()
+
+        self.disc = Discriminator(self.out_features)
+
+        self.sigm = nn.Sigmoid()
+        self.read = AvgReadout()
+
+    def reset_parameters(self):
+        torch.nn.init.xavier_uniform_(self.weight1)
+        # torch.nn.init.xavier_uniform_(self.weight2)
+
+    def forward(self, feat, feat_a, adj):
+        z = F.dropout(feat, self.dropout, self.training)
+        z = torch.mm(z, self.weight1)
+        z = torch.mm(adj, z)
+
+        emb = self.act(z)
+
+        z_a = F.dropout(feat_a, self.dropout, self.training)
+        z_a = torch.mm(z_a, self.weight1)
+        z_a = torch.mm(adj, z_a)
+        emb_a = self.act(z_a)
+
+        g = self.read(emb, self.graph_neigh)
+        g = self.sigm(g)
+
+        g_a = self.read(emb_a, self.graph_neigh)
+        g_a = self.sigm(g_a)
+
+        ret = self.disc(g, emb, emb_a)
+        ret_a = self.disc(g_a, emb_a, emb)
+
+        return emb, emb_a, ret, ret_a
 
 
 class Attention(nn.Module):
-    def __init__(self, in_size, hidden_size=16):  # in_size=32
+    def __init__(self, in_size):
         super(Attention, self).__init__()
         self.project = nn.Linear(in_size, 1, bias=False)
 
-    def forward(self, z):  # z:(3639,2,32)
+    def forward(self, z):
         w = self.project(z)
-        beta = torch.softmax(w, dim=1)  # (3639,2,1)
+        beta = torch.softmax(w, dim=1)
         return (beta * z).sum(1), beta
 
 
-# feat.shape[1], args.num_en, args.num_de, args.num_hidden, args.num_proj, feat.shape[1]
 class GRACE(torch.nn.Module):
     def __init__(self,
                  input_dim,
                  num_en,
                  num_de,
                  num_hidden,
-                 num_proj,
+                 graph_neigh
                  ):
         super(GRACE, self).__init__()
         self.encoder = Encoder(input_dim, num_en, num_de)
-        self.gca = GCA(num_en[-1], num_hidden, num_proj)
-        self.attention = Attention(num_proj)
+        self.gcl = GCL(num_en[-1], num_hidden, graph_neigh)
+        self.attention = Attention(num_hidden)
 
-    def forward(self, x: torch.Tensor, edge_index_1: torch.Tensor, edge_index_2: torch.Tensor):
-        z = self.encoder(x)
-        emb1 = self.gca(z, edge_index_1)
-        emb2 = self.gca(z, edge_index_2)
-        h1 = self.gca.projection(emb1)
-        h2 = self.gca.projection(emb2)
-        emb = torch.stack([emb1, emb2], dim=1)
+    def forward(self, feat, adj):
+        z = self.encoder(feat)
+        z_a = permutation(z)
+        emb, emb_a, ret, ret_a = self.gcl(z, z_a, adj)
+        emb = torch.stack([emb, emb_a], dim=1)
         emb, _ = self.attention(emb)
         de_z = self.encoder.forward_d(emb)
-        return h1, h2, emb, de_z
+        return ret, ret_a, emb, de_z
 
 
 def buildNetwork(

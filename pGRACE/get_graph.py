@@ -1,8 +1,11 @@
 import networkx as nx
 import numba
+import ot
 import numpy as np
 from scipy import stats
+import scipy.sparse as sp
 from scipy.spatial import distance
+from sklearn.neighbors import kneighbors_graph
 
 
 class graph():
@@ -127,61 +130,30 @@ class graph():
         return edges
 
 
-@numba.njit("f4(f4[:], f4[:])")
-def euclid_dist(t1, t2):
-    sum = 0
-    for i in range(t1.shape[0]):
-        sum += (t1[i] - t2[i]) ** 2
-    return np.sqrt(sum)
+def construct_interaction(adata, n_neighbors=15):
+    """Constructing spot-to-spot interactive graph"""
+    position = adata.obsm['spatial']  # (3639, 2)
 
+    # calculate distance matrix
+    distance_matrix = ot.dist(position, position, metric='euclidean')  # (3639, 3639)
+    n_spot = distance_matrix.shape[0]
 
-@numba.njit("f4[:,:](f4[:,:])", parallel=True, nogil=True)
-def pairwise_distance(X):
-    n = X.shape[0]
-    adj = np.empty((n, n), dtype=np.float32)
-    for i in numba.prange(n):
-        for j in numba.prange(n):
-            adj[i][j] = euclid_dist(X[i], X[j])
-    return adj
+    adata.obsm['distance_matrix'] = distance_matrix
 
+    # find k-nearest neighbors
+    interaction = np.zeros([n_spot, n_spot])
+    for i in range(n_spot):
+        vec = distance_matrix[i, :]
+        distance = vec.argsort()
+        for t in range(1, n_neighbors + 1):
+            y = distance[t]
+            interaction[i, y] = 1
 
-def calculate_adj_matrix(x, y, x_pixel=None, y_pixel=None, image=None, beta=49, alpha=1, histology=False):
-    # x,y,x_pixel, y_pixel are lists
-    X = np.array([x, y]).T.astype(np.float32)
-    adj = pairwise_distance(X)
-    return adj
+    adata.obsm['graph_neigh'] = interaction
 
+    # transform adj to symmetrical adj
+    adj = interaction
+    adj = adj + adj.T
+    adj = np.where(adj > 1, 1, adj)
 
-def load_graph(adata):
-    x_array = adata.obs["array_row"]
-    y_array = adata.obs["array_col"]
-    adj = calculate_adj_matrix(x_array, y_array)
-
-    num_vertices = len(adj)
-    graph = nx.Graph()
-    graph.add_nodes_from(range(num_vertices))
-
-    def euclidean_to_adjacency(euclidean_matrix, n):
-        adjacency_matrix = np.zeros_like(euclidean_matrix)
-
-        # 获取矩阵中距离最小的n个元素的索引
-        indices = np.argsort(euclidean_matrix, axis=1)[:n]
-
-        # 将距离最小的n个元素转换为邻接矩阵中的1
-        row_indices, col_indices = np.unravel_index(indices, euclidean_matrix.shape)
-        adjacency_matrix[row_indices, col_indices] = 1
-
-        np.fill_diagonal(adjacency_matrix, 0)
-        return adjacency_matrix
-
-    n = 30  # 距离最近的前2个元素作为邻居
-    adjacency_matrix = euclidean_to_adjacency(adj, n)
-
-    for i in range(num_vertices):
-        for j in range(i + 1, num_vertices):
-            if adjacency_matrix[i][j] == 1:
-                graph.add_edge(i, j)
-
-    edges = np.array(list(graph.edges()))
-
-    return edges
+    adata.obsm['adj'] = adj
